@@ -34,6 +34,7 @@ try:
         louvain,
         pagerank,
         shortest_path,
+        structure_metrics,
     )
     from .graph import Graph
     from .storage import DerivedStore, GraphStore, rebuild_index_from_shards
@@ -51,6 +52,7 @@ except ImportError:  # pragma: no cover
         louvain,
         pagerank,
         shortest_path,
+        structure_metrics,
     )
     from graph import Graph
     from storage import DerivedStore, GraphStore, rebuild_index_from_shards
@@ -70,9 +72,11 @@ class SocialGraphService:
         self._graph_dirty = False
         self._community_cache: Optional[dict] = None
         self._pagerank_cache: Optional[Dict[int, float]] = None
+        self._metrics_cache: Optional[dict] = None
         self._rec_cache: Dict[int, dict] = self.derived.load_recommendations()
         self._community_dirty = False
         self._pagerank_dirty = False
+        self._metrics_dirty = False
 
     # ------------------------------------------------------------------
     # Graph access / caching
@@ -86,6 +90,7 @@ class SocialGraphService:
                 # Graph changed -> derived results are stale.
                 self._community_dirty = True
                 self._pagerank_dirty = True
+                self._metrics_dirty = True
             return self._graph
 
     def invalidate_graph(self) -> None:
@@ -94,6 +99,8 @@ class SocialGraphService:
             self._graph_dirty = True
             self._community_dirty = False
             self._pagerank_dirty = True
+            self._metrics_cache = None
+            self._metrics_dirty = True
 
     def graph_stats(self) -> dict:
         graph = self.get_graph()
@@ -435,6 +442,77 @@ class SocialGraphService:
         }
 
     # ------------------------------------------------------------------
+    # Structural metrics (expensive; cached in memory + on disk)
+    # ------------------------------------------------------------------
+    def graph_metrics(self, refresh: bool = False) -> dict:
+        """Diameter / avg path / clustering / assortativity with caching.
+
+        Two-level cache: in-memory first, then the on-disk ``metrics.json``.
+        Both entries are validated against the graph's structural
+        fingerprint, so any graph change forces a recompute while an
+        unchanged graph is served instantly (even across restarts).
+        ``refresh=True`` bypasses both caches and recomputes.
+        """
+        with self._lock:
+            graph = self.get_graph()
+            fingerprint = list(graph.fingerprint())
+            if (
+                not refresh
+                and not self._metrics_dirty
+                and self._metrics_cache is not None
+                and self._metrics_cache.get("fingerprint") == fingerprint
+            ):
+                return {**self._metrics_cache["payload"], "cached": True}
+            if not refresh and self._metrics_cache is None:
+                disk = self.derived.load_metrics()
+                if disk.get("fingerprint") == fingerprint and disk.get("payload"):
+                    self._metrics_cache = disk
+                    self._metrics_dirty = False
+                    return {**disk["payload"], "cached": True}
+
+            with config.Timed() as timer:
+                raw = structure_metrics(graph)
+
+            metrics = {
+                "diameter": raw["diameter"],
+                "avg_shortest_path": _round_or_none(raw["avg_shortest_path"]),
+                "avg_clustering": _round_or_none(raw["avg_clustering"]),
+                "transitivity": _round_or_none(raw["transitivity"]),
+                "degree_assortativity": _round_or_none(raw["degree_assortativity"]),
+            }
+            notes = {}
+            if raw["diameter"] is None:
+                notes["diameter"] = "空图：无节点"
+            if raw["avg_shortest_path"] is None:
+                notes["avg_shortest_path"] = "最大连通分量不足 2 个节点，无有效节点对"
+            if raw["avg_clustering"] is None:
+                notes["avg_clustering"] = "无度 ≥ 2 的节点，局部聚集系数均未定义"
+            if raw["transitivity"] is None:
+                notes["transitivity"] = "图中不存在连通三元组"
+            if raw["degree_assortativity"] is None:
+                notes["degree_assortativity"] = "无边或边端度数方差为 0，无法计算相关系数"
+
+            n = graph.node_count
+            largest = raw["largest_component"]
+            payload = {
+                "metrics": metrics,
+                "notes": notes,
+                "context": {
+                    "nodes": n,
+                    "edges": graph.edge_count,
+                    "components": raw["components"],
+                    "largest_component": largest,
+                    "coverage": round(largest / n, 6) if n else 0.0,
+                },
+                "computed_at": config.now_ms(),
+                "time_ms": round(timer.elapsed_ms, 2),
+            }
+            self._metrics_cache = {"fingerprint": fingerprint, "payload": payload}
+            self._metrics_dirty = False
+            self.derived.save_metrics(self._metrics_cache)
+            return {**payload, "cached": False}
+
+    # ------------------------------------------------------------------
     # Recommendations
     # ------------------------------------------------------------------
     def recommend(self, uid: int, k: Optional[int] = None, refresh: bool = False, strategy: Optional[str] = None) -> dict:
@@ -570,6 +648,13 @@ class SocialGraphService:
             "profiles": len(profiles),
             "shards": self.store.shard_usage(),
         }
+
+
+def _round_or_none(value, digits: int = 6):
+    """Round a float for JSON output, passing ``None`` through unchanged."""
+    if value is None:
+        return None
+    return round(value, digits)
 
 
 def _count_components(graph: Graph) -> int:

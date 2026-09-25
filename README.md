@@ -72,6 +72,7 @@ gsb3/
     ├── recommendations.json    # 推荐结果（单独存储）
     ├── community.json          # Louvain 结果缓存
     ├── pagerank.json           # PageRank 结果缓存
+    ├── metrics.json            # 结构指标缓存（带图指纹校验）
     ├── index.json              # 用户 → 分片 索引
     └── settings.json           # 系统设置
 ```
@@ -105,6 +106,7 @@ gsb3/
 | 最短路径 | 经典 BFS + **双向 BFS**（大图自动切换，搜索面 O(b^(d/2))） |
 | PageRank | 幂迭代，显式处理 dangling 节点，O(n) 内存，L1 收敛判定 |
 | Louvain | 两阶段模块度优化：局部移动（ΔQ 增量公式）+ 聚合，迭代至收敛，固定种子可复现，`min_improvement` 早停 |
+| 结构指标 | 直径 / 平均最短路径（最大连通分量上全源 BFS）、平均聚集系数与全局传递性（一次三角形计数）、度相关性（边端度数 Pearson 相关）；全程确定性、可复现 |
 | 协同过滤 | 朋友的朋友 + Adamic-Adar 权重去偏，仅依赖邻域规模 |
 | 图嵌入 | 距离-地标（landmark）定位嵌入：L 次有界 BFS 得到低维向量，捕捉结构相似性，无需神经网络训练 |
 | 冷启动 | 好友数低于阈值时退化为「热门 + 标签重叠」 |
@@ -135,6 +137,7 @@ gsb3/
 | GET | `/api/pagerank?top=` | PageRank 中心性 |
 | GET/POST | `/api/recommend/<id>` · `/api/recommend` | 单用户 / 批量推荐 |
 | GET | `/api/stats` | 统计面板聚合 |
+| GET | `/api/graph/metrics?refresh=` | 复杂结构指标（直径/平均最短路径/聚集系数/度相关性，缓存 + 按需重算） |
 | GET/PUT | `/api/settings` | 读取 / 保存设置 |
 | GET/POST/DELETE | `/api/tags` | 标签管理 |
 | GET | `/api/export?format=json\|graphml\|csv` | 导出 |

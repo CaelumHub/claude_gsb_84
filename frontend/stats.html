@@ -22,6 +22,17 @@
 
         <div class="grid cols-4" id="tiles"></div>
 
+        <div class="card mt-16">
+          <div class="card-head">
+            <div class="card-title">复杂结构指标
+              <span class="sub" id="metricsMeta">打开页面自动计算一次，结果缓存复用</span>
+            </div>
+            <button class="btn btn-sm" id="btnMetricsRefresh">重新计算</button>
+          </div>
+          <div class="grid cols-3" id="metricsGrid"></div>
+          <div class="muted mt-8" id="metricsNote" style="font-size:12px;display:none"></div>
+        </div>
+
         <div class="grid cols-2 mt-16">
           <div class="card">
             <div class="card-title">度数分布</div>
@@ -114,6 +125,68 @@
       box.innerHTML = html;
     }
 
+    // ------------------------------------------------------------------
+    // 复杂结构指标（后端计算、前端只负责展示；含义说明为静态文案）
+    // ------------------------------------------------------------------
+    const METRIC_DEFS = [
+      { key: "diameter", label: "直径", fmt: (v) => C.fmt(v),
+        desc: "最大连通分量内，任意两点间最短路径的最大值（跳数）。反映网络中最坏情况下的传播距离。" },
+      { key: "avg_shortest_path", label: "平均最短路径", fmt: (v) => v.toFixed(3),
+        desc: "最大连通分量内所有节点对之间最短路径长度（跳数）的平均值。越小说明关系与信息传播越高效。" },
+      { key: "avg_clustering", label: "平均聚集系数", fmt: (v) => v.toFixed(4),
+        desc: "各节点局部聚集系数（邻居之间实际边数 ÷ 可能边数）的平均，度 < 2 的节点不计入。衡量“朋友的朋友也是朋友”的程度。" },
+      { key: "transitivity", label: "全局传递性", fmt: (v) => v.toFixed(4),
+        desc: "3 × 三角形数 ÷ 连通三元组数，从全图角度衡量三角闭合（三方互相认识）的比例。" },
+      { key: "degree_assortativity", label: "度相关性", fmt: (v) => (v >= 0 ? "+" : "") + v.toFixed(4),
+        desc: "边两端节点度数的 Pearson 相关系数，取值 [-1, 1]：> 0 表示高度数节点倾向互连（同配），< 0 表示高低互连（异配）。" },
+    ];
+
+    function renderMetrics(data) {
+      const m = data.metrics || {};
+      const notes = data.notes || {};
+      const ctx = data.context || {};
+      document.getElementById("metricsGrid").innerHTML = METRIC_DEFS.map((def) => {
+        const v = m[def.key];
+        const defined = v !== null && v !== undefined;
+        let html = '<div class="card stat-tile"><div class="label">' + def.label + "</div>" +
+          '<div class="value">' + (defined ? def.fmt(v) : "—") + "</div>" +
+          '<div class="hint">' + def.desc + "</div>";
+        if (notes[def.key]) {
+          html += '<div class="hint" style="color:var(--warning)">⚠ ' + notes[def.key] + "</div>";
+        }
+        return html + "</div>";
+      }).join("");
+
+      const noteBox = document.getElementById("metricsNote");
+      if (ctx.components > 1) {
+        noteBox.textContent = "注：图为非连通图（" + C.fmt(ctx.components) + " 个连通分量），直径与平均最短路径基于最大连通分量计算，覆盖 " +
+          C.fmt(ctx.largest_component) + " / " + C.fmt(ctx.nodes) + " 节点（" + C.fmtPct(ctx.coverage || 0) + "）。";
+        noteBox.style.display = "";
+      } else {
+        noteBox.style.display = "none";
+      }
+
+      const when = data.computed_at ? new Date(data.computed_at).toLocaleTimeString("zh-CN") : "—";
+      document.getElementById("metricsMeta").textContent =
+        "计算于 " + when + " · 耗时 " + C.fmtMs(data.time_ms || 0) + (data.cached ? " · 缓存命中" : " · 本次新计算");
+    }
+
+    function loadMetrics(refresh) {
+      const grid = document.getElementById("metricsGrid");
+      const btn = document.getElementById("btnMetricsRefresh");
+      if (refresh || !grid.innerHTML.trim()) {
+        grid.innerHTML = C.spinner();
+      }
+      btn.disabled = true;
+      return api.graphMetrics(refresh ? { refresh: 1 } : {})
+        .then(renderMetrics)
+        .catch((e) => {
+          grid.innerHTML = C.emptyState("⚠", "指标计算失败：" + e.message);
+          C.toast(e.message, "error");
+        })
+        .finally(() => { btn.disabled = false; });
+    }
+
     function load() {
       const p1 = api.stats();
       const p2 = api.pagerank({ top: 15 });
@@ -124,10 +197,13 @@
         renderCommunitySizes(s);
         renderShards(s.shards);
       }).catch((e) => C.toast(e.message, "error"));
+      // 结构指标与基础统计分开加载：首次自动计算，之后命中缓存。
+      loadMetrics(false);
     }
 
     C.initPage("stats", function () {
       document.getElementById("btnRefresh").addEventListener("click", load);
+      document.getElementById("btnMetricsRefresh").addEventListener("click", () => loadMetrics(true));
       load();
     });
   </script>

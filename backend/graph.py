@@ -253,6 +253,28 @@ class Graph:
             g.add_edge(u, v, w)
         return g
 
+    def fingerprint(self) -> Tuple[int, int, int]:
+        """Cheap structural fingerprint ``(node_count, edge_count, checksum)``.
+
+        The service layer uses this to decide whether a cached derived result
+        (community partition, structural metrics, ...) still matches the
+        current graph without comparing full edge lists.  The checksum mixes
+        every CSR neighbour slot with its position, so any edge or ordering
+        change flips it, while staying O(E) and allocation-free.
+        """
+        mod = (1 << 61) - 1
+        checksum = 0
+        if self._frozen:
+            for i, nb in enumerate(self._neighbors):
+                checksum = (checksum + (i + 1) * (nb + 1)) % mod
+        else:
+            i = 0
+            for u in self._index_node:
+                for nb in sorted(self._adj.get(u, {})):
+                    i += 1
+                    checksum = (checksum + i * (nb + 1)) % mod
+        return (len(self._index_node), self.edge_count, checksum)
+
 
 class GraphBuilder:
     """Convenience alias / factory kept for readability in service code."""

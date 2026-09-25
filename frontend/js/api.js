@@ -88,6 +88,7 @@
 
     // 统计 / 设置 / 标签
     stats: () => request("GET", "/api/stats"),
+    graphMetrics: (p) => request("GET", "/api/graph/metrics" + qs(p)),
     settings: () => request("GET", "/api/settings"),
     saveSettings: (b) => request("PUT", "/api/settings", b),
     resetSettings: () => request("POST", "/api/settings/reset"),

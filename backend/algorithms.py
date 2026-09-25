@@ -7,6 +7,7 @@ Graph algorithms implemented for **memory-efficient, large-scale execution**.
 * ``bidirectional_shortest_path`` -- meets-in-the-middle, much faster on big graphs
 * ``pagerank``                   -- power iteration over CSR with dangling-node fix
 * ``louvain``                    -- two-phase modularity optimisation w/ early stop
+* ``structure_metrics``          -- diameter / avg path / clustering / assortativity
 * ``recommend_*``                -- collaborative filtering + embedding + cold start
   + diversity re-ranking (MMR)
 
@@ -19,6 +20,7 @@ from __future__ import annotations
 import heapq
 import math
 import random
+from array import array
 from collections import Counter, defaultdict, deque
 from typing import Dict, List, Optional, Set, Tuple
 
@@ -750,3 +752,176 @@ def hybrid_recommend(
         "diversity": diversity,
         "items": items,
     }
+
+
+# ===========================================================================
+# Structural metrics (diameter, average path, clustering, assortativity)
+# ===========================================================================
+def _intersect_count(a: List[int], b: List[int]) -> int:
+    """Size of the intersection of two sorted lists (two-pointer merge)."""
+    i = j = common = 0
+    la, lb = len(a), len(b)
+    while i < la and j < lb:
+        if a[i] == b[j]:
+            common += 1
+            i += 1
+            j += 1
+        elif a[i] < b[j]:
+            i += 1
+        else:
+            j += 1
+    return common
+
+
+def structure_metrics(graph: Graph) -> Dict[str, object]:
+    """Expensive whole-graph structural metrics, computed in one pass.
+
+    Metrics (all on the **undirected, unweighted** topology -- edge weights
+    are ignored, matching the classic textbook definitions):
+
+    * ``diameter`` -- longest shortest path (in hops) inside the **largest
+      connected component**.  ``0`` when the component is a single node,
+      ``None`` for an empty graph.
+    * ``avg_shortest_path`` -- mean shortest-path length over all unordered
+      node pairs in the largest connected component.  ``None`` when the
+      component has fewer than 2 nodes (no pairs to average).
+    * ``avg_clustering`` -- mean of the local clustering coefficients
+      ``2 * links(N(v)) / (d_v * (d_v - 1))``; nodes with degree < 2 are
+      undefined and excluded from the mean (networkx convention).
+    * ``transitivity`` -- global clustering: ``3 * triangles / connected
+      triples`` over the whole graph.  ``None`` when no triple exists.
+    * ``degree_assortativity`` -- Pearson correlation of the degrees at the
+      two ends of every edge, in ``[-1, 1]``.  ``None`` when the graph has
+      no edges or the degree sequence has zero variance.
+
+    Distance metrics are restricted to the largest component because
+    shortest paths between components are infinite; ``components`` and
+    ``largest_component`` are returned so callers can report the scope.
+
+    Fully deterministic (no randomness, no sampling): repeated runs on the
+    same graph return identical values, which is what makes the result
+    cacheable and reproducible.
+    """
+    n = graph.node_count
+    result: Dict[str, object] = {
+        "diameter": None,
+        "avg_shortest_path": None,
+        "avg_clustering": None,
+        "transitivity": None,
+        "degree_assortativity": None,
+        "components": 0,
+        "largest_component": 0,
+    }
+    if n == 0:
+        return result
+
+    # Dense-index adjacency, each row sorted so triangle counting can use
+    # two-pointer intersections instead of building n hash sets.
+    id_of = graph.node_at_index
+    idx_of = {id_of(i): i for i in range(n)}
+    adj: List[List[int]] = [None] * n  # type: ignore[list-item]
+    for i in range(n):
+        adj[i] = sorted(idx_of[nb] for nb in graph.neighbors(id_of(i)))
+
+    # --- connected components (iterative DFS, largest first) --------------
+    seen = bytearray(n)
+    comps: List[List[int]] = []
+    for s in range(n):
+        if seen[s]:
+            continue
+        comp = []
+        stack = [s]
+        seen[s] = 1
+        while stack:
+            i = stack.pop()
+            comp.append(i)
+            for j in adj[i]:
+                if not seen[j]:
+                    seen[j] = 1
+                    stack.append(j)
+        comps.append(comp)
+    comps.sort(key=len, reverse=True)
+    largest = comps[0]
+    result["components"] = len(comps)
+    result["largest_component"] = len(largest)
+
+    # --- diameter & average shortest path on the largest component --------
+    # One BFS per source; the stamp array avoids re-initialising the dist
+    # array for every source (O(k * (V + E)) total, O(V) memory).
+    k = len(largest)
+    if k >= 2:
+        dist = array("i", [0]) * n
+        stamp = array("i", [-1]) * n
+        total_dist = 0
+        diameter = 0
+        for tag, src in enumerate(largest):
+            stamp[src] = tag
+            dist[src] = 0
+            queue = deque([src])
+            while queue:
+                i = queue.popleft()
+                di = dist[i] + 1
+                for j in adj[i]:
+                    if stamp[j] != tag:
+                        stamp[j] = tag
+                        dist[j] = di
+                        total_dist += di
+                        if di > diameter:
+                            diameter = di
+                        queue.append(j)
+        result["diameter"] = diameter
+        # total_dist sums ordered pairs; unordered pairs = k * (k - 1) / 2.
+        result["avg_shortest_path"] = total_dist / (k * (k - 1))
+    else:
+        # A single isolated node has eccentricity 0 and no pairs to average.
+        result["diameter"] = 0
+        result["avg_shortest_path"] = None
+
+    # --- clustering coefficients & transitivity (single triangle pass) ----
+    # links_i = edges among neighbours of i; summed over all nodes it equals
+    # 3 * triangles, and C(d_i, 2) summed is the number of connected triples.
+    links_total = 0
+    triples_total = 0
+    clust_sum = 0.0
+    clust_nodes = 0
+    for i in range(n):
+        row = adj[i]
+        d = len(row)
+        if d < 2:
+            continue
+        links = 0
+        for j in row:
+            links += _intersect_count(row, adj[j])
+        links //= 2
+        links_total += links
+        triples_total += d * (d - 1) // 2
+        clust_sum += (2.0 * links) / (d * (d - 1))
+        clust_nodes += 1
+    if clust_nodes:
+        result["avg_clustering"] = clust_sum / clust_nodes
+    if triples_total:
+        result["transitivity"] = links_total / triples_total
+
+    # --- degree assortativity (Pearson over edge-end degrees) --------------
+    m = 0
+    sx = sy = sxx = syy = sxy = 0.0
+    for i in range(n):
+        di = len(adj[i])
+        for j in adj[i]:
+            if j > i:
+                dj = len(adj[j])
+                m += 1
+                sx += di
+                sy += dj
+                sxx += di * di
+                syy += dj * dj
+                sxy += di * dj
+    if m:
+        cov = m * sxy - sx * sy
+        var_x = m * sxx - sx * sx
+        var_y = m * syy - sy * sy
+        denom = math.sqrt(var_x * var_y)
+        if denom > 0:
+            result["degree_assortativity"] = cov / denom
+
+    return result

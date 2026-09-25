@@ -29,6 +29,7 @@ Endpoint summary (all under ``/api``):
     GET    /api/recommend/<id>        ?k&refresh&strategy
     POST   /api/recommend             {ids:[...], k}
     GET    /api/stats
+    GET    /api/graph/metrics         ?refresh   (expensive; cached)
     GET    /api/settings              /  PUT /api/settings
     POST   /api/settings/reset
     GET    /api/tags                  /  POST /api/tags  /  DELETE /api/tags/<name>
@@ -320,6 +321,11 @@ class ApiRouter:
         # --- stats ---
         if route == "/stats" and method == "GET":
             return 200, self.service.full_stats()
+
+        # --- structural metrics (expensive; cached, refresh on demand) ---
+        if route == "/graph/metrics" and method == "GET":
+            refresh = _to_bool(query.get("refresh"), False)
+            return 200, self.service.graph_metrics(refresh=refresh)
 
         # --- profiles (separately stored user profiles) ---
         if route == "/profiles" and method == "GET":

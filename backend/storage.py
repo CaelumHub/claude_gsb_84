@@ -444,6 +444,12 @@ class DerivedStore:
             config.PAGERANK_FILE, {"ranks": {str(k): v for k, v in ranks.items()}}
         )
 
+    def load_metrics(self) -> dict:
+        return config.read_json(config.METRICS_FILE, {})
+
+    def save_metrics(self, metrics: dict) -> None:
+        config.atomic_write_json(config.METRICS_FILE, metrics)
+
 
 def log_import(entry: dict) -> None:
     """Append a one-line JSON record to the import log (append-only, cheap)."""

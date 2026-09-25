@@ -57,7 +57,33 @@ def _check() -> int:
     rec = algorithms.hybrid_recommend(g, 1, k=3)
     assert "items" in rec
 
-    print("[check] OK: graph, bfs, pagerank, louvain, recommend all pass")
+    # Structural metrics on the barbell (hand-verified values).
+    sm = algorithms.structure_metrics(g)
+    assert sm["components"] == 1 and sm["largest_component"] == 6, sm
+    assert sm["diameter"] == 3, sm
+    assert abs(sm["avg_shortest_path"] - 1.8) < 1e-9, sm
+    assert abs(sm["avg_clustering"] - 7.0 / 9.0) < 1e-9, sm
+    assert abs(sm["transitivity"] - 0.6) < 1e-9, sm
+    assert abs(sm["degree_assortativity"] - (-1.0 / 6.0)) < 1e-9, sm
+    # Reproducible: identical on a second run.
+    assert algorithms.structure_metrics(g) == sm, "metrics must be deterministic"
+
+    # Disconnected graph: distance metrics scoped to the largest component.
+    g2 = Graph(directed=False)
+    for u, v in [(1, 2), (2, 3)]:
+        g2.add_edge(u, v)
+    g2.add_node(4)
+    g2.add_node(5)
+    g2.freeze()
+    sm2 = algorithms.structure_metrics(g2)
+    assert sm2["components"] == 3 and sm2["largest_component"] == 3, sm2
+    assert sm2["diameter"] == 2, sm2
+    assert abs(sm2["avg_shortest_path"] - 4.0 / 3.0) < 1e-9, sm2
+    assert sm2["avg_clustering"] == 0.0, sm2
+    assert sm2["transitivity"] == 0.0, sm2
+    assert abs(sm2["degree_assortativity"] - (-1.0)) < 1e-9, sm2
+
+    print("[check] OK: graph, bfs, pagerank, louvain, recommend, metrics all pass")
     return 0
 
 
