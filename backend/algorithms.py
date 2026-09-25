@@ -450,6 +450,221 @@ def louvain(
 
 
 # ===========================================================================
+# Structural metrics: connected components, diameter, average shortest path
+# length, average clustering coefficient, degree assortativity
+# ===========================================================================
+def connected_components(graph: Graph) -> List[List[int]]:
+    """Return the connected components as node lists.
+
+    Components are ordered largest-first; ties break on the smallest node id,
+    so the result is deterministic and ``components[0]`` is the "giant"
+    component used by the path-length based metrics.
+    """
+    seen: Set[int] = set()
+    components: List[List[int]] = []
+    for start in graph.nodes:
+        if start in seen:
+            continue
+        members: List[int] = []
+        stack = [start]
+        seen.add(start)
+        while stack:
+            cur = stack.pop()
+            members.append(cur)
+            for nb in graph.neighbors(cur):
+                if nb not in seen:
+                    seen.add(nb)
+                    stack.append(nb)
+        members.sort()
+        components.append(members)
+    # Largest first; on equal size keep the component containing the smallest
+    # node id (members are sorted, so members[0] is the smallest member).
+    components.sort(key=lambda members: (-len(members), members[0]))
+    return components
+
+
+def _bfs_distance_profile(graph: Graph, source: int) -> Tuple[int, int]:
+    """Return ``(sum_of_distances, max_distance)`` from ``source`` via BFS."""
+    dist = {source: 0}
+    queue = deque([source])
+    total = 0
+    farthest = 0
+    while queue:
+        node = queue.popleft()
+        d_next = dist[node] + 1
+        for nb in graph.neighbors(node):
+            if nb not in dist:
+                dist[nb] = d_next
+                total += d_next
+                if d_next > farthest:
+                    farthest = d_next
+                queue.append(nb)
+    return total, farthest
+
+
+def diameter_and_avg_path_length(
+    graph: Graph,
+    component: Optional[List[int]] = None,
+) -> Tuple[Optional[int], Optional[float], int]:
+    """All-pairs BFS within one connected component.
+
+    Returns ``(diameter, average_shortest_path_length, pair_count)`` where the
+    average is the mean over *unordered* node pairs.  Each BFS accumulates the
+    sum of distances from its source to every other node, so summing over all
+    sources counts every unordered pair twice (once from each end); the mean is
+    ``sum_dist / (n*(n-1))`` -- the NetworkX ``average_shortest_path_length``
+    convention for the given component.  A component of < 2 nodes has no path
+    pairs, so the first two values are ``None``.
+    """
+    nodes = component if component is not None else graph.nodes
+    n = len(nodes)
+    if n < 2:
+        return None, None, 0
+    sum_dist = 0
+    diameter = 0
+    for source in nodes:
+        total, farthest = _bfs_distance_profile(graph, source)
+        sum_dist += total
+        if farthest > diameter:
+            diameter = farthest
+    pair_count = n * (n - 1) // 2
+    return diameter, sum_dist / (n * (n - 1)), pair_count
+
+
+def average_clustering_coefficient(graph: Graph) -> Tuple[Optional[float], int, int]:
+    """Global average clustering coefficient (Watts-Strogatz / NetworkX).
+
+    For every node ``u`` with degree ``k >= 2`` the local coefficient is
+    ``|links between neighbours of u| / (k choose 2)``; nodes with ``k < 2``
+    contribute ``0``.  The reported value is the mean over **all** nodes (the
+    average clustering coefficient, not the transitivity ratio) and is fully
+    determined by the topology, hence reproducible.
+
+    Returns ``(coefficient, triangle_contributions, nodes_scored)``.
+    """
+    n = graph.node_count
+    if n == 0:
+        return None, 0, 0
+    total = 0.0
+    triangle_links = 0
+    for u in graph.nodes:
+        nbrs = list(graph.neighbors(u))
+        k = len(nbrs)
+        if k < 2:
+            continue
+        # |edges within u's neighbour set|.  Each triangle (u, v, w) is counted
+        # once for each of its 3 vertices across the outer loop; here we only
+        # need u's own share, so count the v<w pairs that are themselves linked.
+        linked = 0
+        nbr_set = set(nbrs)
+        for i in range(k):
+            v = nbrs[i]
+            row = graph.neighbors(v)
+            for w in row:
+                if w in nbr_set and w > v:
+                    linked += 1
+        total += (2.0 * linked) / (k * (k - 1))
+        triangle_links += linked
+    return total / n, triangle_links, n
+
+
+def degree_assortativity_coefficient(graph: Graph) -> Optional[float]:
+    """Pearson correlation of degrees at the two ends of every edge (Newman).
+
+    .. math::
+        r = \\frac{M^{-1}\\sum_i j_i k_i -
+                 [M^{-1}\\sum_i \\tfrac12(j_i+k_i)]^2}
+                {M^{-1}\\sum_i \\tfrac12(j_i^2+k_i^2) -
+                 [M^{-1}\\sum_i \\tfrac12(j_i+k_i)]^2}
+
+    where the sum runs over the ``M`` *undirected* edges and ``j_i, k_i`` are
+    the endpoint degrees.  ``r`` lies in ``[-1, 1]``: positive = assortative
+    (hubs connect to hubs), negative = disassortative.  Returns ``None`` when
+    the variance term is zero (e.g. no edges or every degree identical).
+    """
+    sum1 = 0.0   # sum of (j + k) / 2
+    sum2 = 0.0   # sum of (j^2 + k^2) / 2
+    sumjk = 0.0  # sum of j * k
+    m = 0
+    for u, v, _w in graph.iter_edges():
+        if not graph.directed and u > v:
+            continue
+        j = graph.degree(u)
+        k = graph.degree(v)
+        sum1 += (j + k) / 2.0
+        sum2 += (j * j + k * k) / 2.0
+        sumjk += j * k
+        m += 1
+    if m == 0:
+        return None
+    mean = sum1 / m
+    variance = sum2 / m - mean * mean
+    if variance <= 0.0:
+        return None
+    return (sumjk / m - mean * mean) / variance
+
+
+def structural_metrics(
+    graph: Graph,
+    max_component: int = config.STRUCTURE_MAX_COMPONENT,
+) -> dict:
+    """Compute the full structural-metrics bundle for the stats panel.
+
+    Diameter and average shortest path length are defined on the largest
+    connected component (the conventional definition for disconnected
+    graphs); if that component exceeds ``max_component`` nodes the exact
+    all-pairs BFS is skipped and both values come back ``None`` with
+    ``path_metrics_truncated`` set.  Clustering and assortativity are
+    single-pass and always computed over the whole graph.
+    """
+    n = graph.node_count
+    result = {
+        "nodes": n,
+        "edges": graph.edge_count,
+        "components": 0,
+        "component_sizes": [],
+        "largest_component": 0,
+        "diameter": None,
+        "avg_path_length": None,
+        "path_pairs": 0,
+        "path_metrics_truncated": False,
+        "avg_clustering": None,
+        "triangle_links": 0,
+        "degree_assortativity": None,
+        "isolated": 0,
+    }
+    if n == 0:
+        return result
+
+    components = connected_components(graph)
+    sizes = [len(c) for c in components]
+    result["components"] = len(components)
+    result["component_sizes"] = sizes
+    result["largest_component"] = sizes[0] if sizes else 0
+
+    giant = components[0] if components else []
+    if giant and len(giant) <= max_component:
+        diameter, avg_path, pairs = diameter_and_avg_path_length(graph, giant)
+        result["diameter"] = diameter
+        result["avg_path_length"] = round(avg_path, 6) if avg_path is not None else None
+        result["path_pairs"] = pairs
+    elif giant:
+        result["path_metrics_truncated"] = True
+
+    clustering, triangle_links, _ = average_clustering_coefficient(graph)
+    result["avg_clustering"] = round(clustering, 6) if clustering is not None else None
+    result["triangle_links"] = triangle_links
+
+    assortativity = degree_assortativity_coefficient(graph)
+    result["degree_assortativity"] = (
+        round(assortativity, 6) if assortativity is not None else None
+    )
+
+    result["isolated"] = sum(1 for nid in graph.nodes if graph.degree(nid) == 0)
+    return result
+
+
+# ===========================================================================
 # Recommendations
 # ===========================================================================
 def recommend_collaborative(

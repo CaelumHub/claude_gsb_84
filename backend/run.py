@@ -54,10 +54,27 @@ def _check() -> int:
     lv = algorithms.louvain(g)
     assert lv["num_communities"] >= 2, lv  # cliques should separate
 
+    # Structural metrics -- hand-computed values for the barbell graph.
+    components = algorithms.connected_components(g)
+    assert len(components) == 1 and len(components[0]) == 6, components
+    diameter, avg_path, pairs = algorithms.diameter_and_avg_path_length(g, components[0])
+    assert diameter == 3, diameter                    # e.g. 2 -> 3 -> 4 -> 5
+    assert pairs == 15, pairs
+    assert abs(avg_path - 27 / 15) < 1e-9, avg_path   # 54 directed / 30 ends
+    clustering, _tri, _n = algorithms.average_clustering_coefficient(g)
+    assert abs(clustering - 7 / 9) < 1e-9, clustering
+    assort = algorithms.degree_assortativity_coefficient(g)
+    assert abs(assort - (-1 / 6)) < 1e-9, assort
+    bundle = algorithms.structural_metrics(g)
+    assert bundle["diameter"] == 3 and bundle["components"] == 1, bundle
+    assert abs(bundle["avg_path_length"] - round(27 / 15, 6)) < 1e-9
+    # Determinism: a second run on the same frozen graph is identical.
+    assert algorithms.structural_metrics(g) == bundle
+
     rec = algorithms.hybrid_recommend(g, 1, k=3)
     assert "items" in rec
 
-    print("[check] OK: graph, bfs, pagerank, louvain, recommend all pass")
+    print("[check] OK: graph, bfs, pagerank, louvain, structure, recommend all pass")
     return 0
 
 

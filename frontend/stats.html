@@ -22,6 +22,19 @@
 
         <div class="grid cols-4" id="tiles"></div>
 
+        <div class="card mt-16">
+          <div class="card-head">
+            <div class="card-title">复杂结构指标
+              <span class="sub">直径 · 平均最短路径 · 平均聚集系数 · 度相关性</span>
+            </div>
+            <button class="btn btn-sm" id="btnMetricsRefresh">重新计算</button>
+          </div>
+          <div id="metricsBody">
+            <div class="grid cols-4" id="metricTiles"></div>
+            <div class="metric-note" id="metricNote"></div>
+          </div>
+        </div>
+
         <div class="grid cols-2 mt-16">
           <div class="card">
             <div class="card-title">度数分布</div>
@@ -52,6 +65,42 @@
   <script>
     const C = common;
 
+    // 复杂结构指标：展示口径与含义说明（计算口径以后端 algorithms.py 为准）。
+    const METRICS = [
+      {
+        key: "diameter",
+        label: "直径",
+        desc: "最大连通分量中任意两点最短路径跳数的最大值，即图中最远的两点相隔几条边。",
+        scope: "口径：最大连通分量 · BFS",
+        fmt: (v) => (v == null ? "—" : C.fmt(v)),
+      },
+      {
+        key: "avg_path_length",
+        label: "平均最短路径长度",
+        desc: "最大连通分量内全部无序节点对最短路径跳数的平均值，反映任意两用户的平均距离（“小世界”程度）。",
+        scope: "口径：最大连通分量 · 全源 BFS",
+        fmt: (v) => (v == null ? "—" : v.toFixed(3)),
+      },
+      {
+        key: "avg_clustering",
+        label: "平均聚集系数",
+        desc: "节点的邻居之间互为邻居的平均比例：好友的好友也多是好友则接近 1，完全稀疏则为 0。",
+        scope: "口径：全图节点局部聚集系数平均",
+        fmt: (v) => (v == null ? "—" : v.toFixed(3)),
+      },
+      {
+        key: "degree_assortativity",
+        label: "度相关性",
+        desc: "每条边两端度数的 Pearson 相关系数：>0 度数相近者相连（同配），<0 大 V 连小白（异配）。",
+        scope: "口径：全图边 · Newman 公式",
+        fmt: function (v) {
+          if (v == null) return "—";
+          return v.toFixed(3) + "（" + this._assortHint(v) + "）";
+        },
+        _assortHint: (v) => (v > 0.05 ? "同配" : v < -0.05 ? "异配" : "近中性"),
+      },
+    ];
+
     function renderTiles(s) {
       const g = s.graph || {};
       const tiles = [
@@ -67,6 +116,67 @@
       document.getElementById("tiles").innerHTML = tiles.map((t) =>
         '<div class="card stat-tile"><div class="label">' + t.label + '</div><div class="value">' + t.value + '</div><div class="hint">' + t.hint + "</div></div>"
       ).join("");
+    }
+
+    function renderMetricsLoading() {
+      document.getElementById("metricTiles").innerHTML = "";
+      document.getElementById("metricNote").innerHTML = C.spinner();
+    }
+
+    function renderMetrics(m) {
+      const tilesEl = document.getElementById("metricTiles");
+      if (!m.nodes) {
+        tilesEl.innerHTML = "";
+        document.getElementById("metricNote").innerHTML =
+          '<div class="metric-note-inner">图中暂无节点，无法计算结构指标。</div>';
+        return;
+      }
+      tilesEl.innerHTML = METRICS.map((meta) => {
+        let value = meta.fmt(m[meta.key]);
+        let note = "";
+        // 分量过大时跳过全源 BFS，明确告知而不是给出误导性数字。
+        if ((meta.key === "diameter" || meta.key === "avg_path_length") &&
+            m.path_metrics_truncated) {
+          value = "n/a";
+          note = '<div class="hint">最大连通分量超过 ' + C.fmt(m.max_component_limit) +
+                 ' 节点，已跳过精确 BFS</div>';
+        }
+        return '<div class="metric-tile">' +
+               '<div class="label">' + meta.label + "</div>" +
+               '<div class="value">' + value + "</div>" +
+               '<div class="desc">' + meta.desc + "</div>" +
+               '<div class="scope">' + meta.scope + "</div>" +
+               note + "</div>";
+      }).join("");
+
+      const parts = [
+        m.cached ? '<span class="badge info">缓存结果</span>' : '<span class="badge success">本次新算</span>',
+        '<span class="faint small">连通分量 ' + C.fmt(m.components) +
+          " · 最大分量 " + C.fmt(m.largest_component) + " 节点" +
+          " · 路径节点对 " + C.fmt(m.path_pairs) + "</span>",
+      ];
+      if (m.time_ms != null) parts.push('<span class="faint small">计算耗时 ' + C.fmtMs(m.time_ms) + "</span>");
+      if (m.computed_at) parts.push('<span class="faint small">计算于 ' + new Date(m.computed_at).toLocaleString("zh-CN") + "</span>");
+      document.getElementById("metricNote").innerHTML =
+        '<div class="metric-note-inner row wrap">' + parts.join("") + "</div>";
+    }
+
+    function loadMetrics(force, btn) {
+      const setBusy = (busy) => {
+        const b = btn || document.getElementById("btnMetricsRefresh");
+        if (b) { b.disabled = busy; b.textContent = busy ? "计算中…" : "重新计算"; }
+      };
+      renderMetricsLoading();
+      setBusy(true);
+      api.structureMetrics(force)
+        .then((m) => renderMetrics(m))
+        .catch((e) => {
+          document.getElementById("metricNote").innerHTML =
+            '<div class="metric-note-inner"><span class="badge danger">计算失败</span> ' +
+            C.escapeHtml(e.message) + "</div>";
+          C.toast(e.message, "error");
+        })
+        .finally(() => setBusy(false));
     }
 
     function renderDegreeDist(dd) {
@@ -127,8 +237,14 @@
     }
 
     C.initPage("stats", function () {
-      document.getElementById("btnRefresh").addEventListener("click", load);
+      document.getElementById("btnRefresh").addEventListener("click", () => {
+        load();
+        loadMetrics(false);
+      });
+      document.getElementById("btnMetricsRefresh").addEventListener("click", () => loadMetrics(true));
       load();
+      // 打开页面自动算一次（命中缓存则直接返回缓存，未算过则现场计算）。
+      loadMetrics(false);
     });
   </script>
 </body>

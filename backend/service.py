@@ -29,11 +29,13 @@ try:
         bidirectional_shortest_path,
         bfs_shortest_path,
         common_friends,
+        connected_components,
         hybrid_recommend,
         jaccard_similarity,
         louvain,
         pagerank,
         shortest_path,
+        structural_metrics,
     )
     from .graph import Graph
     from .storage import DerivedStore, GraphStore, rebuild_index_from_shards
@@ -46,11 +48,13 @@ except ImportError:  # pragma: no cover
         bidirectional_shortest_path,
         bfs_shortest_path,
         common_friends,
+        connected_components,
         hybrid_recommend,
         jaccard_similarity,
         louvain,
         pagerank,
         shortest_path,
+        structural_metrics,
     )
     from graph import Graph
     from storage import DerivedStore, GraphStore, rebuild_index_from_shards
@@ -70,6 +74,8 @@ class SocialGraphService:
         self._graph_dirty = False
         self._community_cache: Optional[dict] = None
         self._pagerank_cache: Optional[Dict[int, float]] = None
+        self._structure_cache: Optional[dict] = None
+        self._structure_computing = threading.Lock()
         self._rec_cache: Dict[int, dict] = self.derived.load_recommendations()
         self._community_dirty = False
         self._pagerank_dirty = False
@@ -104,15 +110,15 @@ class SocialGraphService:
         density = (2.0 * m / (n * (n - 1))) if n > 1 else 0.0
         max_deg = max(degrees) if degrees else 0
         degree_dist = Counter(degrees)
-        # Connected components (BFS, iterative) -- full pass, cached implicitly.
-        components = _count_components(graph)
+        # Connected components -- full pass over the CSR, ordered largest-first.
+        components = connected_components(graph)
         return {
             "nodes": n,
             "edges": m,
             "avg_degree": round(avg, 3),
             "max_degree": max_deg,
             "density": round(density, 6),
-            "components": components,
+            "components": len(components),
             "degree_distribution": [
                 {"degree": d, "count": c}
                 for d, c in sorted(degree_dist.items())
@@ -571,21 +577,83 @@ class SocialGraphService:
             "shards": self.store.shard_usage(),
         }
 
+    # ------------------------------------------------------------------
+    # Structural metrics (diameter / avg path / clustering / assortativity)
+    # ------------------------------------------------------------------
+    def _structure_signature(self) -> dict:
+        """Topology signature a cached bundle must match to stay valid.
 
-def _count_components(graph: Graph) -> int:
-    """Iterative connected-components count (no recursion limit issues)."""
-    seen: Set[int] = set()
-    count = 0
-    for node in graph.nodes:
-        if node in seen:
-            continue
-        count += 1
-        stack = [node]
-        seen.add(node)
-        while stack:
-            cur = stack.pop()
-            for nb in graph.neighbors(cur):
-                if nb not in seen:
-                    seen.add(nb)
-                    stack.append(nb)
-    return count
+        Combining the true CSR node/edge counts with the index build timestamp
+        catches every topology mutation (import, delete, merge, index rebuild)
+        without invalidating on harmless metadata writes.
+        """
+        meta = self.store.index.meta
+        return {
+            "version": config.STRUCTURE_VERSION,
+            "nodes": self._graph.node_count,
+            "edges": self._graph.edge_count,
+            "index_built_at": meta.get("built_at", 0),
+        }
+
+    def _structure_envelope(self, metrics: dict) -> dict:
+        """Attach cache/provenance metadata consumed by the stats UI."""
+        return {
+            **metrics,
+            "signature": self._structure_signature(),
+            "max_component_limit": config.STRUCTURE_MAX_COMPONENT,
+            "computed_at": config.now_ms(),
+        }
+
+    def get_structure_metrics(self) -> Optional[dict]:
+        """Return a valid cached bundle (memory then disk) or ``None``.
+
+        A bundle is valid only when its topology signature matches the current
+        graph; stale bundles are ignored so the caller recomputes once.
+        """
+        with self._lock:
+            signature = self._structure_signature() if self._graph is not None else None
+            cache = self._structure_cache
+            if cache is None:
+                cache = self.derived.load_structure_metrics()
+                if cache:
+                    self._structure_cache = cache
+        if cache and signature is not None and cache.get("signature") == signature:
+            result = dict(cache)
+            result["cached"] = True
+            return result
+        return None
+
+    def compute_structure_metrics(self, force: bool = False) -> dict:
+        """Return structural metrics, computing when stale or on ``force``.
+
+        Concurrent page loads on a cold cache coalesce behind a single
+        computation lock: the first thread computes, the rest wait and reuse
+        its result instead of running a second all-pairs BFS.
+        """
+        graph = self.get_graph()  # ensure the topology signature is available
+        if not force:
+            cached = self.get_structure_metrics()
+            if cached is not None:
+                return cached
+
+        # ``acquire`` blocks while another request is computing; the holder
+        # populates the cache, so after acquiring we re-check before working.
+        with self._structure_computing:
+            if not force:
+                cached = self.get_structure_metrics()
+                if cached is not None:
+                    return cached
+            graph = self.get_graph()
+            with config.Timed() as timer:
+                metrics = structural_metrics(
+                    graph, max_component=config.STRUCTURE_MAX_COMPONENT
+                )
+            envelope = self._structure_envelope(metrics)
+            envelope["time_ms"] = round(timer.elapsed_ms, 2)
+            with self._lock:
+                self._structure_cache = envelope
+            self.derived.save_structure_metrics(envelope)
+
+        result = dict(envelope)
+        result["cached"] = False
+        return result

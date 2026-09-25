@@ -40,6 +40,7 @@ TAGS_FILE = os.path.join(DATA_DIR, "tags.json")
 RECOMMENDATIONS_FILE = os.path.join(DATA_DIR, "recommendations.json")
 COMMUNITY_FILE = os.path.join(DATA_DIR, "community.json")
 PAGERANK_FILE = os.path.join(DATA_DIR, "pagerank.json")
+STRUCTURE_FILE = os.path.join(DATA_DIR, "structure_metrics.json")
 INDEX_FILE = os.path.join(DATA_DIR, "index.json")
 SETTINGS_FILE = os.path.join(DATA_DIR, "settings.json")
 IMPORT_LOG_FILE = os.path.join(DATA_DIR, "import_log.jsonl")
@@ -88,6 +89,12 @@ LOUVAIN_RANDOM_SEED = 1337
 COMMUNITY_READ_DIRECT = True
 
 BFS_MAX_DEPTH = 64                        # safety bound on unweighted BFS
+
+# Structural metrics (diameter / average shortest path length are all-pairs
+# BFS, O(V*(V+E)); the exact pass is skipped for components above this cap so
+# opening the stats page stays responsive on huge graphs).
+STRUCTURE_MAX_COMPONENT = int(os.environ.get("GSB_STRUCTURE_MAX_COMPONENT", "2000"))
+STRUCTURE_VERSION = 1                     # bump to force on-disk cache recompute
 
 # Recommendation
 RECOMMEND_DEFAULT_K = 10

@@ -444,6 +444,13 @@ class DerivedStore:
             config.PAGERANK_FILE, {"ranks": {str(k): v for k, v in ranks.items()}}
         )
 
+    def load_structure_metrics(self) -> dict:
+        """Cached structural metrics (diameter / paths / clustering / assortativity)."""
+        return config.read_json(config.STRUCTURE_FILE, {})
+
+    def save_structure_metrics(self, metrics: dict) -> None:
+        config.atomic_write_json(config.STRUCTURE_FILE, metrics)
+
 
 def log_import(entry: dict) -> None:
     """Append a one-line JSON record to the import log (append-only, cheap)."""

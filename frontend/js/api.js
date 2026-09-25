@@ -77,10 +77,12 @@
     commonFriends: (source, target) =>
       request("GET", "/api/common-friends" + qs({ source, target })),
 
-    // 社群 / PageRank
+    // 社群 / PageRank / 结构指标
     community: () => request("GET", "/api/community"),
     computeCommunity: (resolution) => request("POST", "/api/community/compute", { resolution }),
     pagerank: (p) => request("GET", "/api/pagerank" + qs(p)),
+    structureMetrics: (refresh) =>
+      request("GET", "/api/structure" + qs({ refresh: refresh ? 1 : undefined })),
 
     // 推荐
     recommend: (id, p) => request("GET", "/api/recommend/" + id + qs(p)),

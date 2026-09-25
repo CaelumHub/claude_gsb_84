@@ -213,6 +213,20 @@ code, pre, .mono { font-family: var(--mono); }
 .stat-tile .trend-up { color: var(--success); }
 .stat-tile .trend-down { color: var(--danger); }
 
+/* 复杂结构指标卡片 */
+.metric-tile {
+  padding: 16px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg-inset);
+  display: flex; flex-direction: column; gap: 7px;
+}
+.metric-tile .label { font-size: 12px; color: var(--text-muted); font-weight: 600; }
+.metric-tile .value { font-size: 24px; font-weight: 720; letter-spacing: -0.01em; }
+.metric-tile .desc { font-size: 12px; line-height: 1.55; color: var(--text-muted); }
+.metric-tile .scope { font-size: 11.5px; color: var(--text-faint); }
+.metric-tile .hint { font-size: 11.5px; color: var(--warning); line-height: 1.5; }
+.metric-note { margin-top: 12px; }
+.metric-note-inner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
 /* 按钮 */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
